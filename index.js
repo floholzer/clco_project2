@@ -79,7 +79,7 @@ function createVmAndNicWithDisk(index) {
         creationData: { createOption: "Empty" }, // Leere Disk erstellen
     });
     
-    // VM erstellen
+    // VM erstellen und Disk anhängen
     const vm = new azure_native.compute.VirtualMachine(`${vmBaseName}-${index}`, {
         resourceGroupName: resourceGroup.name,
         location: resourceGroup.location,
@@ -121,10 +121,10 @@ function createVmAndNicWithDisk(index) {
         },
     });
 
-    return { nic, vm };
+    return { nic, disk, vm };
 }
 
-// Zwei VMs und NICs erstellen
+// Zwei VMs mit Disks und NICs erstellen
 const vm1 = createVmAndNicWithDisk(1);
 const vm2 = createVmAndNicWithDisk(2);
 
