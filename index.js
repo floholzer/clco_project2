@@ -4,14 +4,23 @@ const azure_native = require("@pulumi/azure-native");
 // Konfigurationsvariablen
 const resourceGroupName = "A12_Monitoring";
 const location = "westeurope";
-const vmName = "monitored-linux-vm";
+const vmBaseName = "monitored-linux-vm";
 const size = "Standard_B1s";
 const adminUsername = "azureuser";
 const adminPassword = "Password1234!";
+const diskSize = 1024;
 
 // Resource Group erstellen
 const resourceGroup = new azure_native.resources.ResourceGroup(resourceGroupName, {
     location: location,
+});
+
+// Öffentliche IP-Adresse für das Netzwerk erstellen
+const publicIp = new azure_native.network.PublicIPAddress("network-public-ip", {
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+    publicIPAllocationMethod: "Dynamic",
+    sku: { name: "Basic" },
 });
 
 // Speicherkonto für Boot-Diagnose erstellen
@@ -34,6 +43,18 @@ const subnet = new azure_native.network.Subnet("subnet", {
     resourceGroupName: resourceGroup.name,
     virtualNetworkName: vnet.name,
     addressPrefix: "10.0.1.0/24",
+});
+
+// Load Balancer erstellen und mit der öffentlichen IP-Adresse verbinden
+const loadBalancer = new azure_native.network.LoadBalancer("network-lb", {
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+    frontendIPConfigurations: [
+        {
+            name: "LoadBalancerFrontend",
+            publicIPAddress: { id: publicIp.id },
+        },
+    ],
 });
 
 // Funktion zur Erstellung einer VM mit einer eigenen NIC
@@ -141,6 +162,7 @@ const alert2 = createMetricAlert(vm2, 2);
 exports.resourceGroupName = resourceGroup.name;
 exports.vnetName = vnet.name;
 exports.subnetName = subnet.name;
+exports.publicIp = publicIp.ipAddress;
 exports.vm1Name = vm1.vm.name;
 exports.vm2Name = vm2.vm.name;
 exports.vm1DiskId = vm1.disk.id;
