@@ -2,7 +2,7 @@ const pulumi = require("@pulumi/pulumi");
 const azure_native = require("@pulumi/azure-native");
 
 // Konfigurationsvariablen
-const resourceGroupName = "A12_Monitoring";
+const resourceGroupName = "clco_project2";
 const location = "westeurope";
 const vmBaseName = "monitored-linux-vm";
 const size = "Standard_B1s";
@@ -45,19 +45,64 @@ const subnet = new azure_native.network.Subnet("subnet", {
     addressPrefix: "10.0.1.0/24",
 });
 
-// Load Balancer erstellen und mit der öffentlichen IP-Adresse verbinden
+// Network Security Group (NSG) erstellen
+const nsg = new azure_native.network.NetworkSecurityGroup("vnet-nsg", {
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+});
+
+// Inbound-Regel für Port 80 in der NSG erstellen
+const allowHttpRule = new azure_native.network.SecurityRule("allow-http", {
+    resourceGroupName: resourceGroup.name,
+    networkSecurityGroupName: nsg.name,
+    priority: 100,
+    direction: "Inbound",
+    access: "Allow",
+    protocol: "*",
+    sourcePortRange: "*",
+    destinationPortRange: "80",
+    sourceAddressPrefix: "*",
+    destinationAddressPrefix: "*",
+});
+
+// Default-Regel zum Verweigern von allem anderen erstellen
+const denyAllRule = new azure_native.network.SecurityRule("deny-all", {
+    resourceGroupName: resourceGroup.name,
+    networkSecurityGroupName: nsg.name,
+    priority: 200,
+    direction: "Inbound",
+    access: "Deny",
+    protocol: "*",
+    sourcePortRange: "*",
+    destinationPortRange: "*",
+    sourceAddressPrefix: "*",
+    destinationAddressPrefix: "*",
+});
+
+// NSG mit dem Subnetz verknüpfen
+const subnetWithNsg = new azure_native.network.Subnet("subnet-with-nsg", {
+    resourceGroupName: resourceGroup.name,
+    virtualNetworkName: vnet.name,
+    addressPrefix: "10.0.1.0/24",
+    networkSecurityGroup: {
+        id: nsg.id,
+    },
+});
+
+// Load Balancer erstellen
 const loadBalancer = new azure_native.network.LoadBalancer("network-lb", {
     resourceGroupName: resourceGroup.name,
     location: resourceGroup.location,
-    frontendIPConfigurations: [
-        {
-            name: "LoadBalancerFrontend",
-            publicIPAddress: { id: publicIp.id },
-        },
-    ],
+    frontendIPConfigurations: [{
+        name: "LoadBalancerFrontend",
+        publicIPAddress: { id: publicIp.id },
+    }],
+    backendAddressPools: [{
+        name: "BackendPool",
+    }],
 });
 
-// Funktion zur Erstellung einer VM mit einer eigenen NIC
+// Funktion zur Erstellung einer VM mit einer eigenen NIC + Disk
 function createVmAndNicWithDisk(index) {
     // NIC erstellen
     const nic = new azure_native.network.NetworkInterface(`nic-${index}`, {
@@ -67,6 +112,9 @@ function createVmAndNicWithDisk(index) {
             name: `ipconfig-${index}`,
             subnet: { id: subnet.id },
             privateIPAllocationMethod: "Dynamic",
+            loadBalancerBackendAddressPools: [{
+                id: pulumi.interpolate`${loadBalancer.id}/backendAddressPools/BackendPool`,
+            }],
         }],
     });
     
@@ -76,7 +124,7 @@ function createVmAndNicWithDisk(index) {
         location: resourceGroup.location,
         diskSizeGB: diskSize,
         sku: { name: "Premium_LRS" },
-        creationData: { createOption: "Empty" }, // Leere Disk erstellen
+        creationData: { createOption: "Empty" },
     });
     
     // VM erstellen und Disk anhängen
@@ -105,7 +153,7 @@ function createVmAndNicWithDisk(index) {
                 version: "latest",
             },
             dataDisks: [{
-                lun: 0, // Logical Unit Number
+                lun: 0,
                 createOption: "Attach",
                 managedDisk: { id: disk.id },
             }],
@@ -161,7 +209,9 @@ const alert2 = createMetricAlert(vm2, 2);
 // Outputs
 exports.resourceGroupName = resourceGroup.name;
 exports.vnetName = vnet.name;
-exports.subnetName = subnet.name;
+exports.subnetName = subnetWithNsg.name;
+exports.nsgName = nsg.name;
+exports.loadBalancerName = loadBalancer.name;
 exports.publicIp = publicIp.ipAddress;
 exports.vm1Name = vm1.vm.name;
 exports.vm2Name = vm2.vm.name;
