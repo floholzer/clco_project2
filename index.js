@@ -15,12 +15,36 @@ const resourceGroup = new azure_native.resources.ResourceGroup(resourceGroupName
     location: location,
 });
 
+// Availability Set erstellen (Verfügbarkeit und Redundanz von VMs gewährleisten, die durch den Load Balancer verwaltet werden)
+const availabilitySet = new azure_native.compute.AvailabilitySet("vm-availability-set", {
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+    platformFaultDomainCount: 2,
+    platformUpdateDomainCount: 2,
+    sku: {
+        name: "Aligned",
+    },
+});
+
 // Öffentliche IP-Adresse für das Netzwerk erstellen
 const publicIp = new azure_native.network.PublicIPAddress("network-public-ip", {
     resourceGroupName: resourceGroup.name,
     location: resourceGroup.location,
     publicIPAllocationMethod: "Dynamic",
     sku: { name: "Basic" },
+});
+
+// Load Balancer erstellen
+const loadBalancer = new azure_native.network.LoadBalancer("network-lb", {
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+    frontendIPConfigurations: [{
+        name: "LoadBalancerFrontend",
+        publicIPAddress: { id: publicIp.id },
+    }],
+    backendAddressPools: [{
+        name: "BackendPool",
+    }],
 });
 
 // Speicherkonto für Boot-Diagnose erstellen
@@ -36,13 +60,6 @@ const vnet = new azure_native.network.VirtualNetwork("vnet", {
     resourceGroupName: resourceGroup.name,
     location: resourceGroup.location,
     addressSpace: { addressPrefixes: ["10.0.0.0/16"] },
-});
-
-// Subnetz erstellen
-const subnet = new azure_native.network.Subnet("subnet", {
-    resourceGroupName: resourceGroup.name,
-    virtualNetworkName: vnet.name,
-    addressPrefix: "10.0.1.0/24",
 });
 
 // Network Security Group (NSG) erstellen
@@ -79,27 +96,14 @@ const denyAllRule = new azure_native.network.SecurityRule("deny-all", {
     destinationAddressPrefix: "*",
 });
 
-// NSG mit dem Subnetz verknüpfen
-const subnetWithNsg = new azure_native.network.Subnet("subnet-with-nsg", {
+// Subnetz erstellen und NSG direkt verknüpfen
+const subnet = new azure_native.network.Subnet("subnet", {
     resourceGroupName: resourceGroup.name,
     virtualNetworkName: vnet.name,
-    addressPrefix: "10.0.1.0/24",
+    addressPrefix: "10.0.1.0/24", // Erstes Subnetz
     networkSecurityGroup: {
-        id: nsg.id,
+        id: nsg.id, // Verknüpfe das NSG direkt
     },
-});
-
-// Load Balancer erstellen
-const loadBalancer = new azure_native.network.LoadBalancer("network-lb", {
-    resourceGroupName: resourceGroup.name,
-    location: resourceGroup.location,
-    frontendIPConfigurations: [{
-        name: "LoadBalancerFrontend",
-        publicIPAddress: { id: publicIp.id },
-    }],
-    backendAddressPools: [{
-        name: "BackendPool",
-    }],
 });
 
 // Funktion zur Erstellung einer VM mit einer eigenen NIC + Disk
@@ -110,7 +114,7 @@ function createVmAndNicWithDisk(index) {
         location: resourceGroup.location,
         ipConfigurations: [{
             name: `ipconfig-${index}`,
-            subnet: { id: subnet.id },
+            subnet: { id: subnet.id }, // Verknüpfung mit dem Subnetz
             privateIPAllocationMethod: "Dynamic",
             loadBalancerBackendAddressPools: [{
                 id: pulumi.interpolate`${loadBalancer.id}/backendAddressPools/BackendPool`,
@@ -131,6 +135,9 @@ function createVmAndNicWithDisk(index) {
     const vm = new azure_native.compute.VirtualMachine(`${vmBaseName}-${index}`, {
         resourceGroupName: resourceGroup.name,
         location: resourceGroup.location,
+        availabilitySet: {
+            id: availabilitySet.id, // Verknüpfe mit dem Availability Set
+        },
         hardwareProfile: {
             vmSize: size,
         },
@@ -209,7 +216,7 @@ const alert2 = createMetricAlert(vm2, 2);
 // Outputs
 exports.resourceGroupName = resourceGroup.name;
 exports.vnetName = vnet.name;
-exports.subnetName = subnetWithNsg.name;
+exports.subnetName = subnet.name;
 exports.nsgName = nsg.name;
 exports.loadBalancerName = loadBalancer.name;
 exports.publicIp = publicIp.ipAddress;
