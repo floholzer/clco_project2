@@ -3,12 +3,16 @@ const azure_native = require("@pulumi/azure-native");
 
 // Konfigurationsvariablen
 const resourceGroupName = "clco_project2";
-const location = "westeurope";
-const vmBaseName = "monitored-linux-vm";
+const location = "northeurope";
 const size = "Standard_B1s";
 const adminUsername = "azureuser";
 const adminPassword = "Password1234!";
 const diskSize = 1024;
+const subid = "baf14dc0-aa90-480a-a428-038a6943c5b3";
+const loadBalancerName = "loadBalancer";
+const FE_IP_NAME = "FrontendIPConfig";
+const BE_POOLS_NAME = "BackEndPools";
+const VM_COUNT = 2; // set vm count - horizontally scalable
 
 // Resource Group erstellen
 const resourceGroup = new azure_native.resources.ResourceGroup(resourceGroupName, {
@@ -26,40 +30,19 @@ const availabilitySet = new azure_native.compute.AvailabilitySet("vm-availabilit
     },
 });
 
-// Öffentliche IP-Adresse für das Netzwerk erstellen
-const publicIp = new azure_native.network.PublicIPAddress("network-public-ip", {
-    resourceGroupName: resourceGroup.name,
-    location: resourceGroup.location,
-    publicIPAllocationMethod: "Dynamic",
-    sku: { name: "Basic" },
-});
-
-// Load Balancer erstellen
-const loadBalancer = new azure_native.network.LoadBalancer("network-lb", {
-    resourceGroupName: resourceGroup.name,
-    location: resourceGroup.location,
-    frontendIPConfigurations: [{
-        name: "LoadBalancerFrontend",
-        publicIPAddress: { id: publicIp.id },
-    }],
-    backendAddressPools: [{
-        name: "BackendPool",
-    }],
-});
-
 // Speicherkonto für Boot-Diagnose erstellen
 const storageAccount = new azure_native.storage.StorageAccount("sa", {
     resourceGroupName: resourceGroup.name,
     location: resourceGroup.location,
-    sku: { name: "Standard_LRS" },
-    kind: "StorageV2",
+    sku: {name: azure_native.storage.SkuName.Standard_LRS},
+    kind: azure_native.storage.Kind.StorageV2,
 });
 
 // Virtuelles Netzwerk erstellen
 const vnet = new azure_native.network.VirtualNetwork("vnet", {
     resourceGroupName: resourceGroup.name,
     location: resourceGroup.location,
-    addressSpace: { addressPrefixes: ["10.0.0.0/16"] },
+    addressSpace: {addressPrefixes: ["10.0.0.0/16"]},
 });
 
 // Network Security Group (NSG) erstellen
@@ -68,18 +51,78 @@ const nsg = new azure_native.network.NetworkSecurityGroup("vnet-nsg", {
     location: resourceGroup.location,
 });
 
+// Subnetz erstellen und NSG direkt verknüpfen
+const subnet = new azure_native.network.Subnet("Subnet", {
+    resourceGroupName: resourceGroup.name,
+    virtualNetworkName: vnet.name,
+    addressPrefix: "10.0.1.0/24", // Erstes Subnetz
+    networkSecurityGroup: {
+        id: nsg.id, // Verknüpfe das NSG direkt
+    },
+});
+
 // Inbound-Regel für Port 80 in der NSG erstellen
 const allowHttpRule = new azure_native.network.SecurityRule("allow-http", {
     resourceGroupName: resourceGroup.name,
     networkSecurityGroupName: nsg.name,
     priority: 100,
-    direction: "Inbound",
-    access: "Allow",
+    direction: azure_native.network.SecurityRuleDirection.Inbound,
+    access: azure_native.network.SecurityRuleAccess.Allow,
     protocol: "*",
     sourcePortRange: "*",
     destinationPortRange: "80",
     sourceAddressPrefix: "*",
     destinationAddressPrefix: "*",
+});
+
+// Öffentliche IP-Adresse für das Netzwerk erstellen
+const publicIp = new azure_native.network.PublicIPAddress("public-ip", {
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+    publicIPAllocationMethod: azure_native.network.IpAllocationMethod.Static,
+    sku: {name: azure_native.network.PublicIPAddressSkuName.Standard},
+});
+
+// Load Balancer erstellen
+const loadBalancer = new azure_native.network.LoadBalancer(loadBalancerName, {
+    loadBalancerName: loadBalancerName,
+    resourceGroupName: resourceGroup.name,
+    location: resourceGroup.location,
+    sku: {name: azure_native.network.LoadBalancerSkuName.Standard},
+    frontendIPConfigurations: [{
+        name: FE_IP_NAME,
+        publicIPAddress: {id: publicIp.id},
+    }],
+    backendAddressPools: [{
+        name: BE_POOLS_NAME,
+    }],
+    probes: [{
+        intervalInSeconds: 15,
+        name: "probe-lb",
+        numberOfProbes: 2,
+        port: 80,
+        probeThreshold: 1,
+        protocol: azure_native.network.ProbeProtocol.Http,
+        requestPath: "/",
+    }],
+    loadBalancingRules: [{
+        backendPort: 80,
+        enableFloatingIP: false,
+        frontendPort: 80,
+        idleTimeoutInMinutes: 5,
+        loadDistribution: azure_native.network.LoadDistribution.Default,
+        protocol: azure_native.network.TransportProtocol.Tcp,
+        name: "rulelb",
+        backendAddressPool: {
+            id: pulumi.interpolate`/subscriptions/${subid}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/backendAddressPools/${BE_POOLS_NAME}`,
+        },
+        frontendIPConfiguration: {
+            id: pulumi.interpolate`/subscriptions/${subid}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/frontendIPConfigurations/${FE_IP_NAME}`,
+        },
+        probe: {
+            id: pulumi.interpolate`/subscriptions/${subid}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/probes/probe-lb`,
+        },
+    }],
 });
 
 // Default-Regel zum Verweigern von allem anderen erstellen
@@ -96,43 +139,34 @@ const denyAllRule = new azure_native.network.SecurityRule("deny-all", {
     destinationAddressPrefix: "*",
 });
 
-// Subnetz erstellen und NSG direkt verknüpfen
-const subnet = new azure_native.network.Subnet("subnet", {
-    resourceGroupName: resourceGroup.name,
-    virtualNetworkName: vnet.name,
-    addressPrefix: "10.0.1.0/24", // Erstes Subnetz
-    networkSecurityGroup: {
-        id: nsg.id, // Verknüpfe das NSG direkt
-    },
-});
-
 // Funktion zur Erstellung einer VM mit einer eigenen NIC + Disk
 function createVmAndNicWithDisk(index) {
     // NIC erstellen
-    const nic = new azure_native.network.NetworkInterface(`nic-${index}`, {
+    const nic = new azure_native.network.NetworkInterface("nic-" + index, {
         resourceGroupName: resourceGroup.name,
         location: resourceGroup.location,
         ipConfigurations: [{
-            name: `ipconfig-${index}`,
-            subnet: { id: subnet.id }, // Verknüpfung mit dem Subnetz
+            name: "ipconfig-" + index,
+            subnet: {id: subnet.id}, // Verknüpfung mit dem Subnetz
             privateIPAllocationMethod: "Dynamic",
             loadBalancerBackendAddressPools: [{
-                id: pulumi.interpolate`${loadBalancer.id}/backendAddressPools/BackendPool`,
+                id: pulumi.interpolate`${loadBalancer.id}/backendAddressPools/${BE_POOLS_NAME}`,
             }],
         }],
+        networkSecurityGroup: {id: nsg.id}, // Verknüpfung mit dem NSG
     });
-    
+
     // Disk erstellen
-    const disk = new azure_native.compute.Disk(`disk-${index}`, {
+    const disk = new azure_native.compute.Disk("disk-" + index, {
         resourceGroupName: resourceGroup.name,
         location: resourceGroup.location,
         diskSizeGB: diskSize,
-        sku: { name: "Premium_LRS" },
-        creationData: { createOption: "Empty" },
+        sku: {name: azure_native.compute.StorageAccountTypes.Premium_LRS},
+        creationData: {createOption: azure_native.compute.DiskCreateOption.Empty},
     });
-    
+
     // VM erstellen und Disk anhängen
-    const vm = new azure_native.compute.VirtualMachine(`${vmBaseName}-${index}`, {
+    const vm = new azure_native.compute.VirtualMachine("vm-" + index, {
         resourceGroupName: resourceGroup.name,
         location: resourceGroup.location,
         availabilitySet: {
@@ -144,7 +178,8 @@ function createVmAndNicWithDisk(index) {
         osProfile: {
             adminUsername: adminUsername,
             adminPassword: adminPassword,
-            computerName: `${vmBaseName}-${index}`,
+            computerName: "vm-" + index,
+            customData: Buffer.from("#!/bin/bash\nsudo apt-get update && sudo apt-get install -y nginx && echo '<head><title>VM " + index + "</title></head><body><h1>Hello world!</h1></body>' > /var/www/html/index.html && sudo systemctl start nginx").toString("base64"),
         },
         storageProfile: {
             osDisk: {
@@ -155,18 +190,18 @@ function createVmAndNicWithDisk(index) {
             },
             imageReference: {
                 publisher: "Canonical",
-                offer: "UbuntuServer",
-                sku: "18.04-LTS",
+                offer: "0001-com-ubuntu-server-jammy",
+                sku: "22_04-lts",
                 version: "latest",
             },
             dataDisks: [{
                 lun: 0,
                 createOption: "Attach",
-                managedDisk: { id: disk.id },
+                managedDisk: {id: disk.id},
             }],
         },
         networkProfile: {
-            networkInterfaces: [{ id: nic.id }],
+            networkInterfaces: [{id: nic.id}],
         },
         diagnosticsProfile: {
             bootDiagnostics: {
@@ -176,16 +211,12 @@ function createVmAndNicWithDisk(index) {
         },
     });
 
-    return { nic, disk, vm };
+    return {nic, disk, vm};
 }
-
-// Zwei VMs mit Disks und NICs erstellen
-const vm1 = createVmAndNicWithDisk(1);
-const vm2 = createVmAndNicWithDisk(2);
 
 // Metric Alert für CPU-Auslastung für beide VMs hinzufügen
 function createMetricAlert(vm, index) {
-    return new azure_native.insights.MetricAlert(`vmCpuUsageAlert-${index}`, {
+    return new azure_native.insights.MetricAlert("vmCpuUsageAlert-" + index, {
         resourceGroupName: resourceGroup.name,
         location: "global", // Globale Alert-Regel erforderlich
         severity: 3,
@@ -196,22 +227,29 @@ function createMetricAlert(vm, index) {
         criteria: {
             odataType: "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria", // Globale Kriterien
             allOf: [{
-                name: `HighCpuUsage-${index}`,
+                name: "HighCpuUsage-VM-" + index,
                 metricNamespace: "Microsoft.Compute/virtualMachines", // Namespace für VM-Metriken
                 metricName: "Percentage CPU", // CPU-Auslastung
-                operator: "GreaterThan", // Schwellenwert-Regel
+                operator: azure_native.insights.ConditionOperator.GreaterThan, // Schwellenwert-Regel
                 threshold: 80, // 80% CPU-Nutzung
-                timeAggregation: "Maximum", // Maximalwert
+                timeAggregation: azure_native.insights.AggregationTypeEnum.Maximum, // Maximalwert
                 criterionType: "StaticThresholdCriterion", // Statische Schwelle
             }],
         },
         autoMitigate: true,
-        description: `Alert rule for CPU usage above 80% on monitored Linux VM ${index}.`,
+        description: "Alert rule for CPU usage above 80% on monitored Linux VM " + index + ".",
     });
 }
 
-const alert1 = createMetricAlert(vm1, 1);
-const alert2 = createMetricAlert(vm2, 2);
+// VMs erstellen und Metrik-Alarme hinzufügen
+for (let i = 0; i < VM_COUNT; i++) {
+    const vm = createVmAndNicWithDisk(i);
+    createMetricAlert(vm, i);
+}
+
+// RBAC
+const dziekan_email = "wi22b003@technikum-wien.at";
+const holzer_email = "wi22b090@technikum-wien.at";
 
 // Outputs
 exports.resourceGroupName = resourceGroup.name;
@@ -220,7 +258,3 @@ exports.subnetName = subnet.name;
 exports.nsgName = nsg.name;
 exports.loadBalancerName = loadBalancer.name;
 exports.publicIp = publicIp.ipAddress;
-exports.vm1Name = vm1.vm.name;
-exports.vm2Name = vm2.vm.name;
-exports.vm1DiskId = vm1.disk.id;
-exports.vm2DiskId = vm2.disk.id;
