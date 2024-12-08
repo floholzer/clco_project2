@@ -18,12 +18,10 @@ const teamMembers = [
     {
         name: "Holzer",
         email: "wi22b090@technikum-wien.at",
-        subscriptionId: "baf14dc0-aa90-480a-a428-038a6943c5b3"
     },
     {
         name: "Dziekan",
         email: "wi22b004@technikum-wien.at",
-        subscriptionId: "need to add",
     }
 ];
 
