@@ -1,5 +1,6 @@
 const pulumi = require("@pulumi/pulumi");
 const azure_native = require("@pulumi/azure-native");
+const azuread = require("@pulumi/azuread");
 
 // Konfigurationsvariablen
 const resourceGroupName = "clco_project2";
@@ -8,11 +9,23 @@ const size = "Standard_B1s";
 const adminUsername = "azureuser";
 const adminPassword = "Password1234!";
 const diskSize = 1024;
-const subid = "baf14dc0-aa90-480a-a428-038a6943c5b3";
+const ownerSubscriptionID = "baf14dc0-aa90-480a-a428-038a6943c5b3";
 const loadBalancerName = "loadBalancer";
 const FE_IP_NAME = "FrontendIPConfig";
 const BE_POOLS_NAME = "BackEndPools";
 const VM_COUNT = 2; // set vm count - horizontally scalable
+const teamMembers = [
+    {
+        name: "Holzer",
+        email: "wi22b090@technikum-wien.at",
+        subscriptionId: "baf14dc0-aa90-480a-a428-038a6943c5b3"
+    },
+    {
+        name: "Dziekan",
+        email: "wi22b004@technikum-wien.at",
+        subscriptionId: "need to add",
+    }
+];
 
 // Resource Group erstellen
 const resourceGroup = new azure_native.resources.ResourceGroup(resourceGroupName, {
@@ -114,13 +127,13 @@ const loadBalancer = new azure_native.network.LoadBalancer(loadBalancerName, {
         protocol: azure_native.network.TransportProtocol.Tcp,
         name: "rulelb",
         backendAddressPool: {
-            id: pulumi.interpolate`/subscriptions/${subid}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/backendAddressPools/${BE_POOLS_NAME}`,
+            id: pulumi.interpolate`/subscriptions/${ownerSubscriptionID}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/backendAddressPools/${BE_POOLS_NAME}`,
         },
         frontendIPConfiguration: {
-            id: pulumi.interpolate`/subscriptions/${subid}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/frontendIPConfigurations/${FE_IP_NAME}`,
+            id: pulumi.interpolate`/subscriptions/${ownerSubscriptionID}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/frontendIPConfigurations/${FE_IP_NAME}`,
         },
         probe: {
-            id: pulumi.interpolate`/subscriptions/${subid}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/probes/probe-lb`,
+            id: pulumi.interpolate`/subscriptions/${ownerSubscriptionID}/resourceGroups/${resourceGroup.name}/providers/Microsoft.Network/loadBalancers/${loadBalancerName}/probes/probe-lb`,
         },
     }],
 });
@@ -247,9 +260,43 @@ for (let i = 0; i < VM_COUNT; i++) {
     createMetricAlert(vm, i);
 }
 
-// RBAC
-const dziekan_email = "wi22b003@technikum-wien.at";
-const holzer_email = "wi22b090@technikum-wien.at";
+// Create Role Assignments for Team Members
+
+// Iterate over team members to create Role Assignments and Action Groups
+teamMembers.forEach((member, index) => {
+    // Retrieve user details asynchronously
+    const user = azuread.getUser({
+        userPrincipalName: member.email,
+    });
+
+    // Use Pulumi's apply function to handle the asynchronous retrieval
+    user.then(userData => {
+        const ownerRoleDefinitionId = "/subscriptions/"+ownerSubscriptionID+"/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635";
+
+        // Create Role Assignment
+        const roleAssignment = new azure_native.authorization.RoleAssignment("owner-role-assignment-"+index, {
+            principalId: userData.objectId,
+            principalType: azure_native.authorization.PrincipalType.User,
+            roleDefinitionId: ownerRoleDefinitionId,
+            scope: resourceGroup.id,
+            roleAssignmentName: "6f584535-d195-4368-aa15-aa27a3a40f3"+index, // just a random GUID
+        });
+
+        // Create Action Group for the team member
+        const actionGroup = new azure_native.insights.ActionGroup("action-group-"+index, {
+            location: "global",
+            resourceGroupName: resourceGroup.name,
+            actionGroupName: pulumi.interpolate`${resourceGroup.name}-action-group-${index}`,
+            groupShortName: "group-short",
+            enabled: true,
+            emailReceivers: [{
+                name: member.name,
+                emailAddress: member.email,
+            }],
+        });
+    });
+});
+
 
 // Outputs
 exports.resourceGroupName = resourceGroup.name;

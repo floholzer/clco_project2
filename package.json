@@ -2,7 +2,8 @@
     "name": "Project2",
     "main": "index.js",
     "dependencies": {
-        "@pulumi/pulumi": "^3.0.0",
-        "@pulumi/azure-native": "^2.0.0"
+        "@pulumi/azure-native": "^2.0.0",
+        "@pulumi/azuread": "^6.0.1",
+        "@pulumi/pulumi": "^3.0.0"
     }
 }
